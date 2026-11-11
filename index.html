@@ -1,0 +1,402 @@
+<!doctype html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>bloemetjes voor jou</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Caveat:wght@600&display=swap">
+<style>
+/* layout: full-bleed night canvas on top, scrolling source panel below, like a terminal recording */
+:root{
+  --bg:#07080d; --panel:#0d0f17; --fg:#c9cbd6; --dim:#5d6275; --rose:#ff5c86; --line:#1b1e2b;
+  --mono:"JetBrains Mono", ui-monospace, "SFMono-Regular", Consolas, monospace;
+  color-scheme:dark;
+}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--mono);overflow:hidden}
+#app{height:100%;display:flex;flex-direction:column}
+#stage{position:relative;flex:1;min-height:0;cursor:grab;touch-action:none}
+#stage:active{cursor:grabbing}
+canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
+.hud{position:absolute;top:10px;left:0;right:0;display:flex;justify-content:space-between;gap:12px;
+  padding-left:max(16px, env(safe-area-inset-left, 0px));padding-right:max(16px, env(safe-area-inset-right, 0px));
+  font-size:11px;line-height:1.55;color:var(--dim);pointer-events:none;font-variant-numeric:tabular-nums}
+.hud b{color:var(--fg);font-weight:400}
+.hud .r{text-align:right;color:var(--rose)}
+#msg{position:absolute;left:0;right:0;bottom:22px;text-align:center;pointer-events:none;
+  padding-left:max(16px, env(safe-area-inset-left, 0px));padding-right:max(16px, env(safe-area-inset-right, 0px));
+  font-family:"Caveat","Segoe Script","Bradley Hand",cursive;font-weight:600;
+  font-size:clamp(30px,7vw,48px);line-height:1.1;color:#ffe4ec;min-height:1.2em;text-shadow:0 0 22px rgba(255,92,134,.7),0 0 4px rgba(255,180,200,.6)}
+#msg .h{color:var(--rose)}
+#msg .cur{display:inline-block;width:.08em;margin-left:.06em;background:var(--rose);opacity:.8;animation:blink 1s steps(1) infinite}
+#hint{position:absolute;left:0;right:0;bottom:4px;text-align:center;font-size:10px;color:var(--dim);pointer-events:none;opacity:0;transition:opacity 1s}
+#again{position:absolute;right:max(12px, env(safe-area-inset-right, 0px));bottom:6px;font:inherit;font-size:11px;color:var(--dim);
+  background:transparent;border:1px solid var(--line);border-radius:4px;padding:3px 8px;cursor:pointer}
+#again:hover,#again:focus-visible{color:var(--fg);border-color:var(--dim);outline:none}
+@keyframes blink{50%{opacity:0}}
+.code{height:clamp(104px,23vh,210px);background:var(--panel);border-top:1px solid var(--line);
+  padding-block:8px;padding-left:max(16px, env(safe-area-inset-left, 0px));padding-right:max(16px, env(safe-area-inset-right, 0px));
+  font-size:11px;line-height:1.6;overflow:hidden;display:flex;flex-direction:column}
+.code .bar{display:flex;justify-content:space-between;color:var(--dim);border-bottom:1px solid var(--line);padding-bottom:4px;margin-bottom:4px}
+.code pre{margin:0;flex:1;min-width:0;overflow:hidden;white-space:pre;color:#7f8499}
+.code pre .on{color:var(--fg);background:#161a28;display:inline-block;width:100%}
+.code pre .n{color:#3c4154}
+@media (prefers-reduced-motion: reduce){#msg .cur{animation:none}}
+</style>
+</head>
+<body>
+
+<div id="app">
+  <div id="stage">
+    <canvas id="c"></canvas>
+    <div class="hud">
+      <div>bouquet.js · <b>running</b> · <b id="fps">60</b> fps<br>rotation <b id="rot">0.0°</b><br>petals <b id="cnt">0</b></div>
+      <div class="r" id="clock">t 00.0s</div>
+    </div>
+    <div id="msg"></div>
+    <div id="hint">sleep om te draaien</div>
+    <button id="again" type="button">opnieuw</button>
+  </div>
+  <div class="code">
+    <div class="bar"><span>~/bouquet.js</span><span id="ln">ln 1</span></div>
+    <pre id="code"></pre>
+  </div>
+</div>
+
+<script id="src">
+// ASCII bouquet: every flower is a cloud of 3D points,
+// projected to a character grid and shaded by light.
+const TAU = Math.PI * 2, RAMP = ".:-=+*o#%@", YOFF = 0.44;
+const raw = decodeURIComponent((location.hash || "").slice(1)).replace(/[-_]+/g, " ").trim();
+const NAME = raw.slice(0, 28);
+const HELLO = ` bloemetjes voor jou${NAME ? ", " + NAME : ""} `;
+const A = { tx:[],ty:[],tz:[], sx:[],sy:[],sz:[], nx:[],ny:[],nz:[], r:[],g:[],b:[], sh:[], d:[], du:[] };
+const rnd = (a = 0, b = 1) => a + Math.random() * (b - a);
+const norm = v => { const l = Math.hypot(v[0], v[1], v[2]) || 1; return [v[0]/l, v[1]/l, v[2]/l]; };
+const cross = (a, b) => [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]];
+const dirOf = (pol, az) => [Math.sin(pol)*Math.cos(az), Math.cos(pol), Math.sin(pol)*Math.sin(az)];
+
+function add(p, n, col, sh, d, du, s) {
+  s = s || p; n = norm(n);
+  A.tx.push(p[0]); A.ty.push(p[1] + YOFF); A.tz.push(p[2]);
+  A.sx.push(s[0]); A.sy.push(s[1] + YOFF); A.sz.push(s[2]);
+  A.nx.push(n[0]); A.ny.push(n[1]); A.nz.push(n[2]);
+  A.r.push(col[0]); A.g.push(col[1]); A.b.push(col[2]);
+  A.sh.push(sh); A.d.push(d); A.du.push(du);
+}
+
+// local frame whose "up" points along the flower's facing direction
+function basis(up) {
+  const ref = Math.abs(up[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0];
+  const r = norm(cross(ref, up)), f = cross(up, r);
+  return (x, y, z) => [r[0]*x + up[0]*y + f[0]*z, r[1]*x + up[1]*y + f[1]*z, r[2]*x + up[2]*y + f[2]*z];
+}
+const at = (c, v) => [c[0] + v[0], c[1] + v[1], c[2] + v[2]];
+
+// lily: six pointed petals that open like a trumpet and curl back, long stamens
+function lily(c, dir, R, pink, d0) {
+  const L = basis(dir), n = Math.round(1900 * (R / 0.2) ** 2);
+  const edge = [252, 248, 244], mid = pink ? [238, 92, 150] : [250, 236, 214];
+  for (let i = 0; i < n; i++) {
+    if (Math.random() < 0.12) {                        // stamens + pistil
+      const k = Math.floor(rnd(0, 7)), a = k * TAU / 6 + 0.3, u = Math.random();
+      const sp = k === 6 ? 0 : 0.42, len = k === 6 ? 0.95 : 0.85;
+      const tip = u > 0.88, p = [Math.cos(a) * sp * u * R, u * len * R, Math.sin(a) * sp * u * R];
+      const col = k === 6 ? [150, 200, 90] : tip ? [196, 84, 30] : [205, 215, 150];
+      const j = tip ? 0.025 * R : 0.006 * R;
+      add(at(c, L(p[0] + rnd(-j, j), p[1] + rnd(-j, j), p[2] + rnd(-j, j))), L(0, 1, 0), col, tip ? 0.95 : 0.7, d0 + 0.4 + rnd(0, 0.2), 1.0, c);
+      continue;
+    }
+    const k = Math.floor(rnd(0, 6)), a = k * TAU / 6 + (k % 2) * 0.08, inner = k % 2;
+    const u = Math.random(), w = rnd(-1, 1), s = inner ? 0.9 : 1;
+    const rho = R * s * (0.08 + 0.98 * u), hgt = R * s * (1.25 * u - 1.05 * u * u) + R * 0.07 * (1 - w * w);
+    const wid = R * 0.3 * s * Math.sin(Math.PI * Math.min(1, u * 1.05)) ** 0.75 * (1 - 0.35 * u);
+    const ca = Math.cos(a), sa = Math.sin(a);
+    const p = [ca * rho - sa * w * wid, hgt, sa * rho + ca * w * wid];
+    let col = Math.abs(w) < 0.38 && u < 0.85 ? mid : edge, sh = 0.6 + 0.4 * (1 - Math.abs(w));
+    if (u < 0.14) col = [200, 225, 140];                // green throat
+    if (u > 0.18 && u < 0.62 && Math.random() < 0.05) { col = pink ? [150, 20, 70] : [196, 120, 60]; sh = 0.9; }  // freckles
+    add(at(c, L(...p)), L(-ca * 0.4, 1, -sa * 0.4), col, sh, d0 + rnd(0, 0.25), 1.3, c);
+  }
+}
+
+function rose(c, dir, R, col, d0) {
+  const L = basis(dir), n = Math.round(1500 * (R / 0.18) ** 2);
+  for (let i = 0; i < n; i++) {
+    let p, nn, sh;
+    const th = rnd(0, TAU);
+    if (Math.random() < 0.62) {            // spiral cup of petals
+      const q = Math.sqrt(Math.random()), r = R * q, k = 1.15 * q ** 0.6;
+      p = [r * Math.cos(th), R * 0.72 * q ** 1.6 - R * 0.08, r * Math.sin(th)];
+      nn = [-k * Math.cos(th), 1, -k * Math.sin(th)];
+      const s = Math.cos(th * 2 - q * 19);
+      sh = s < -0.55 ? 0.22 : 0.62 + 0.38 * s;
+    } else {                                // rounded outer petals
+      const v = Math.random(), ph = Math.PI * (0.42 + 0.58 * v), r = R * Math.sin(ph) * 0.92;
+      p = [r * Math.cos(th), R * Math.cos(ph) * 0.6 + R * 0.4, r * Math.sin(th)];
+      nn = [Math.sin(ph) * Math.cos(th), Math.cos(ph), Math.sin(ph) * Math.sin(th)];
+      sh = 0.5 + 0.35 * Math.cos(th * 5 + v * 4);
+    }
+    add(at(c, L(...p)), L(...nn), col, sh, d0 + rnd(0, 0.25), 1.2, c);
+  }
+}
+
+function daisy(c, dir, R, d0) {
+  const L = basis(dir), n = Math.round(1150 * (R / 0.18) ** 2), np = 16;
+  for (let i = 0; i < n; i++) {
+    let p, col, sh;
+    if (Math.random() < 0.8) {               // white petals
+      const k = Math.floor(rnd(0, np)), a = k * TAU / np;
+      const al = rnd(0.24, 1) * R, w = (rnd(-1, 1)) * 0.1 * R * Math.sin(Math.PI * (al / R - 0.24) / 0.76);
+      p = [Math.cos(a) * al - Math.sin(a) * w, -0.18 * R * (al / R) ** 2, Math.sin(a) * al + Math.cos(a) * w];
+      col = [246, 244, 236]; sh = 0.75 + 0.25 * Math.random();
+    } else {                                 // yellow heart
+      const r = 0.25 * R * Math.sqrt(Math.random()), a = rnd(0, TAU);
+      p = [r * Math.cos(a), 0.12 * R * (1 - (r / (0.25 * R)) ** 2), r * Math.sin(a)];
+      col = [250, 196, 40]; sh = 0.55 + 0.45 * Math.random();
+    }
+    add(at(c, L(...p)), L(0, 1, 0), col, sh, d0 + rnd(0, 0.25), 1.1, c);
+  }
+}
+
+function tulip(c, dir, R, col, d0) {
+  const L = basis(dir), n = Math.round(1300 * (R / 0.18) ** 2), seg = TAU / 6;
+  let made = 0;
+  while (made < n) {
+    const th = rnd(0, TAU), v = Math.random(), f = (th % seg) / seg;
+    if (v > 0.72 + 0.28 * (1 - (2 * Math.abs(f - 0.5)) ** 2)) continue;  // pointed tips
+    const r = R * 0.8 * Math.sin(Math.PI * (0.1 + 0.6 * v));
+    const p = [r * Math.cos(th), -0.45 * R + v * 1.35 * R, r * Math.sin(th)];
+    add(at(c, L(...p)), L(Math.cos(th), 0.25, Math.sin(th)), col, 0.42 + 0.58 * Math.sin(Math.PI * f), d0 + rnd(0, 0.25), 1.2, c);
+    made++;
+  }
+}
+
+function stem(top, gx, gz, d0) {
+  const G = [gx, -0.85, gz], B = [gx * 2.2, -1.45, gz * 2.2], C = [gx, (G[1] + top[1]) / 2, gz];
+  for (let i = 0; i < 380; i++) {
+    const s = i / 379; let p;
+    if (s < 0.3) { const t = s / 0.3; p = [B[0] + (G[0] - B[0]) * t, B[1] + (G[1] - B[1]) * t, B[2] + (G[2] - B[2]) * t]; }
+    else { const t = (s - 0.3) / 0.7, u = 1 - t;
+      p = [0, 1, 2].map(k => u * u * G[k] + 2 * u * t * C[k] + t * t * top[k]); }
+    p = p.map(x => x + rnd(-0.006, 0.006));
+    add(p, [rnd(-1, 1), 0, rnd(-1, 1)], [70, 135, 58], 0.7, d0 + s * 2.0, 0.15);
+  }
+}
+
+function leaf(base, dir, len, wid, col, d0) {
+  const side = norm(cross(dir, [0, 1, 0])), nn = cross(side, dir);
+  for (let i = 0; i < 520; i++) {
+    const u = Math.random(), w = rnd(-1, 1), sw = wid * w * Math.sin(Math.PI * u) ** 0.8;
+    const p = [0, 1, 2].map(k => base[k] + dir[k] * u * len + side[k] * sw - (k === 1 ? 0.13 * u * u : 0));
+    add(p, nn, col, 0.45 + 0.55 * Math.min(1, Math.abs(w) * 4), d0 + u * 0.5, 0.6, base);
+  }
+}
+
+function wrap(n, rOff, v0, v1, top, wav, gapC, gapW, col, d0) {
+  const span = TAU - 2 * gapW;
+  for (let i = 0; i < n; i++) {
+    const v = rnd(v0, v1), rr = 0.11 + v * 0.52 + rOff;
+    if (Math.random() > rr / 0.66) { i--; continue; }
+    const a = rnd(0, span), th = gapC + gapW + a;
+    const yTop = top + wav * Math.sin(5 * th + rOff * 40);
+    const y = -0.98 + (v / v1) * (yTop + 0.98);
+    const p = [rr * Math.cos(th), y, rr * Math.sin(th)];
+    const out = [Math.cos(th), -0.45, Math.sin(th)];
+    add(p, out, col, 0.68 + 0.24 * Math.cos(th * 9 + v * 2), d0 + (a / span) * 0.9 + rnd(0, 0.15), 0.6,
+        [p[0] + out[0] * 0.4, p[1], p[2] + out[2] * 0.4]);
+  }
+}
+
+function ribbon(d0) {
+  const red = [205, 28, 58], y = -0.78, r = 0.222, F = [0, y, -r - 0.012];
+  for (let i = 0; i < 1600; i++) {
+    const th = rnd(0, TAU), h = rnd(-0.035, 0.035);
+    add([r * Math.cos(th), y + h, r * Math.sin(th)], [Math.cos(th), 0, Math.sin(th)], red, 0.75 + 0.2 * Math.cos(th * 2), d0 + th / TAU * 0.3, 0.3);
+  }
+  for (const s of [-1, 1]) {
+    for (let i = 0; i < 900; i++) {                        // bow loops
+      const t = rnd(0, TAU), w = rnd(-1, 1);
+      const p = [s * 0.16 * Math.sin(t / 2), y + 0.06 * Math.sin(t) + w * 0.012, F[2] - 0.02 - 0.05 * Math.sin(t / 2) + w * 0.01];
+      add(p, [0, 0.3 * Math.cos(t), -1], red, 0.6 + 0.4 * Math.abs(Math.cos(t / 2)), d0 + 0.45 + rnd(0, 0.2), 0.6, F);
+    }
+    for (let i = 0; i < 400; i++) {                        // hanging tails
+      const u = Math.random(), w = rnd(-1, 1);
+      add([s * (0.07 * u + w * 0.02), y - 0.3 * u, F[2] - 0.015], [0, 0, -1], red, 0.6 + 0.3 * Math.random(), d0 + 0.6 + u * 0.3, 0.4, F);
+    }
+  }
+  for (let i = 0; i < 160; i++) { const v = norm([rnd(-1, 1), rnd(-1, 1), rnd(-1, 1)]);
+    add([F[0] + v[0] * 0.028, y + v[1] * 0.028, F[2] + v[2] * 0.028], v, red, 0.9, d0 + 0.45, 0.3); }
+}
+
+function breath(c, d0) {
+  for (let j = 0; j < 9; j++) {
+    const b = [c[0] + rnd(-0.07, 0.07), c[1] + rnd(-0.05, 0.06), c[2] + rnd(-0.07, 0.07)];
+    for (let i = 0; i < 16; i++) {
+      const v = norm([rnd(-1, 1), rnd(-1, 1), rnd(-1, 1)]), r = rnd(0, 0.02);
+      add([b[0] + v[0] * r, b[1] + v[1] * r, b[2] + v[2] * r], v, [252, 250, 255], 0.9, d0 + rnd(0, 0.3), 0.5, c);
+    }
+  }
+}
+
+function build() {
+  for (let i = 0; i < 3200; i++) {                         // the table it stands on
+    const r = 1.3 * Math.sqrt(Math.random()), a = rnd(0, TAU);
+    add([r * Math.cos(a), -1.5, r * Math.sin(a)], [0, 1, 0], [170, 110, 160], (0.12 + 0.2 * Math.random()) * (1 - r / 1.5), r * 0.35, 0.1);
+  }
+  const C = [0, -0.45, 0], RED = [208, 24, 48], PINK = [242, 108, 150], LILAC = [168, 76, 206], ORANGE = [246, 134, 42];
+  // [polar angle, azimuth, type, colour or lily-is-pink, size]
+  const heads = [[0, 0, "lily", true, 0.25]];
+  [["lily", false], ["rose", RED], ["daisy"], ["lily", true], ["tulip", LILAC], ["rose", PINK]].forEach(([t, col], k) =>
+    heads.push([0.55, k * TAU / 6, t, col, t === "lily" ? 0.22 : 0.18]));
+  [["rose", PINK], ["lily", true], ["daisy"], ["tulip", ORANGE], ["lily", false], ["rose", RED], ["daisy"], ["lily", true]].forEach(([t, col], k) =>
+    heads.push([0.98, 0.4 + k * TAU / 8, t, col, t === "lily" ? 0.2 : 0.165]));
+  heads.forEach(([pol, az, type, col, R], i) => {
+    const d = dirOf(pol, az), c = at(C, d.map(x => x * 0.9)), d0 = 2.5 + i * 0.13;
+    stem(c.map((x, k) => x - d[k] * R * 0.3), Math.cos(az) * pol * 0.05, Math.sin(az) * pol * 0.05, 0.3 + i * 0.03);
+    if (type === "rose") rose(c, d, R, col, d0);
+    else if (type === "tulip") tulip(c, d, R, col, d0);
+    else if (type === "lily") lily(c, d, R, col, d0);
+    else daisy(c, d, R, d0);
+  });
+  for (let k = 0; k < 8; k++) {
+    const az = 0.15 + k * TAU / 8;
+    leaf(at(C, dirOf(1.1, az).map(x => x * 0.62)), norm(dirOf(1.35, az)), 0.4, 0.085, k % 2 ? [56, 132, 72] : [88, 160, 70], 2.2 + k * 0.05);
+  }
+  wrap(6500, -0.025, 0.3, 1.12, 0.2, 0.07, -Math.PI / 2 + 0.3 - 0.35, 0.35, [242, 192, 207], 1.1);
+  wrap(8500, 0, 0, 1, 0.1, 0.06, -Math.PI / 2 - 0.55, 0.55, [198, 152, 102], 1.4);
+  ribbon(2.4);
+  for (let i = 0; i < 24; i++) breath(at(C, dirOf(rnd(0.25, 1.15), rnd(0, TAU)).map(x => x * rnd(0.86, 0.98))), 3.9 + rnd(0, 0.9));
+}
+build(); build();   // two passes = twice the points, fills the finer grid
+
+const N = A.tx.length, F32 = k => Float32Array.from(A[k]);
+const TX = F32("tx"), TY = F32("ty"), TZ = F32("tz"), SX = F32("sx"), SY = F32("sy"), SZ = F32("sz");
+const NX = F32("nx"), NY = F32("ny"), NZ = F32("nz"), CR = F32("r"), CG = F32("g"), CB = F32("b");
+const SH = F32("sh"), DL = F32("d"), DU = F32("du");
+const LIGHT = norm([-0.45, 0.65, -0.6]);
+
+const cv = document.getElementById("c"), ctx = cv.getContext("2d"), stage = document.getElementById("stage");
+let W, H, cw, ch, cols, rows, zb, lb, ib, S, dpr, stars = [], petals = [], sparks = [], bgGrad;
+const glow = document.createElement("canvas"), gctx = glow.getContext("2d");
+function resize() {
+  dpr = Math.min(2, window.devicePixelRatio || 1);
+  W = stage.clientWidth; H = stage.clientHeight;
+  cv.width = W * dpr; cv.height = H * dpr; ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ch = Math.max(6, Math.min(10, Math.round(Math.min(W, H) / 82))); cw = ch * 0.6;
+  cols = Math.ceil(W / cw); rows = Math.ceil(H / ch);
+  zb = new Float32Array(cols * rows); lb = new Float32Array(cols * rows); ib = new Int32Array(cols * rows);
+  S = Math.min(W / 2.3, (H - 60) / 2.5);
+  stars = Array.from({ length: Math.round(W * H / 5000) }, () => ({ x: Math.random() * W, y: Math.random() * H * 0.75, p: rnd(0, TAU) }));
+  sparks = Array.from({ length: 34 }, () => { const a = rnd(0, TAU), r = Math.sqrt(Math.random());
+    return { x: Math.cos(a) * r * 1.15, y: Math.sin(a) * r * 0.75 - 0.35, p: rnd(0, TAU), s: rnd(0.6, 1.4) }; });
+  bgGrad = ctx.createRadialGradient(W / 2, H * 0.4, 0, W / 2, H * 0.4, Math.max(W, H) * 0.75);
+  bgGrad.addColorStop(0, "#22122c"); bgGrad.addColorStop(0.5, "#0e0b17"); bgGrad.addColorStop(1, "#05060a");
+  glow.width = Math.max(1, cv.width / 4 | 0); glow.height = Math.max(1, cv.height / 4 | 0);
+}
+addEventListener("resize", resize); resize();
+
+const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+let t0 = performance.now() - (reduce ? 7000 : 0), drag = 0, last = performance.now(), fps = 60, shown = -1, T = 0;
+const msgText = HELLO, msgStart = 5.3;
+const msg = document.getElementById("msg"), hint = document.getElementById("hint");
+const els = { fps: document.getElementById("fps"), rot: document.getElementById("rot"), cnt: document.getElementById("cnt"), clock: document.getElementById("clock") };
+const easeBack = t => { const c = 1.6; return 1 + (c + 1) * (t - 1) ** 3 + c * (t - 1) ** 2; };
+const esc = s => s.replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c]);
+
+function frame(now) {
+  T = (now - t0) / 1000; const dt = Math.min(0.1, (now - last) / 1000); last = now;
+  fps += (1 / Math.max(dt, 1e-3) - fps) * 0.05;
+  const ang = T * (reduce ? 0.12 : 0.38) + drag, ca = Math.cos(ang), sa = Math.sin(ang);
+  const tl = 0.3, ct = Math.cos(tl), st = Math.sin(tl), ox = W / 2, oy = (H - 50) / 2 + 6;
+  zb.fill(1e9); ib.fill(-1);
+  let visible = 0;
+  for (let i = 0; i < N; i++) {
+    const d = DL[i]; if (T < d) continue;
+    let e = (T - d) / DU[i]; e = e >= 1 ? 1 : easeBack(e);
+    const x = SX[i] + (TX[i] - SX[i]) * e, y = SY[i] + (TY[i] - SY[i]) * e, z = SZ[i] + (TZ[i] - SZ[i]) * e;
+    const xr = x * ca + z * sa, zr = -x * sa + z * ca;
+    const yr = y * ct + zr * st, zz = zr * ct - y * st + 4, f = 4 / zz;
+    const c = (ox + xr * f * S) / cw | 0, r = (oy - yr * f * S) / ch | 0;
+    if (c < 0 || r < 0 || c >= cols || r >= rows) continue;
+    visible++;
+    const k = r * cols + c;
+    if (zz < zb[k]) {
+      const nx = NX[i] * ca + NZ[i] * sa, nz = -NX[i] * sa + NZ[i] * ca;
+      const ny = NY[i] * ct + nz * st, nz2 = nz * ct - NY[i] * st;
+      const dot = Math.abs(nx * LIGHT[0] + ny * LIGHT[1] + nz2 * LIGHT[2]);
+      zb[k] = zz; ib[k] = i; lb[k] = SH[i] * (0.28 + 0.72 * dot) * Math.max(0.45, 1.25 - (zz - 3.3) * 0.45);
+    }
+  }
+  ctx.fillStyle = bgGrad; ctx.fillRect(0, 0, W, H);
+  ctx.font = `${ch}px "JetBrains Mono", ui-monospace, Consolas, monospace`; ctx.textBaseline = "top";
+  for (const s of stars) {                          // twinkling sky
+    const b = 0.35 + 0.35 * Math.sin(T * 1.7 + s.p);
+    ctx.fillStyle = `rgba(200,210,255,${b})`; ctx.fillText(b > 0.62 ? "+" : ".", s.x, s.y);
+  }
+  for (let k = 0; k < ib.length; k++) {
+    const i = ib[k]; if (i < 0) continue;
+    const l = Math.min(1, lb[k]), m = 0.3 + 0.85 * l, sp = l > 0.8 ? (l - 0.8) * 2 : 0;  // soft highlight on lit petals
+    const r = Math.min(255, CR[i] * m), g = Math.min(255, CG[i] * m), b = Math.min(255, CB[i] * m);
+    ctx.fillStyle = `rgb(${r + (255 - r) * sp | 0},${g + (255 - g) * sp | 0},${b + (255 - b) * sp | 0})`;
+    ctx.fillText(RAMP[Math.min(9, l * 10 | 0)], (k % cols) * cw, (k / cols | 0) * ch);
+  }
+  if (T > 4.5) for (const s of sparks) {            // golden sparkles around the flowers
+    const tw = Math.sin(T * 2.2 * s.s + s.p); if (tw < 0.2) continue;
+    const x = s.x * Math.cos(ang * 0.5) * S + ox, y = oy - (s.y + Math.sin(T * 0.6 + s.p) * 0.04) * S;
+    ctx.fillStyle = `rgba(255,214,140,${(tw - 0.2) * Math.min(1, T - 4.5)})`; ctx.fillText(tw > 0.85 ? "✦" : "·", x, y);
+  }
+  gctx.clearRect(0, 0, glow.width, glow.height);   // bloom: shrink, blur, add back on top
+  gctx.drawImage(cv, 0, 0, glow.width, glow.height);
+  ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalCompositeOperation = "lighter"; ctx.globalAlpha = 0.55; ctx.filter = "blur(3px)";
+  ctx.drawImage(glow, 0, 0, cv.width, cv.height); ctx.restore();
+  if (T > 5 && !reduce) {                           // drifting petals
+    if (petals.length < 26 && Math.random() < 0.08) petals.push({ x: rnd(0, W), y: -10, v: rnd(14, 30), p: rnd(0, TAU), c: Math.random() < 0.6 });
+    for (const p of petals) {
+      p.y += p.v * dt; p.x += Math.sin(T * 1.3 + p.p) * 18 * dt;
+      if (p.y > H) { p.y = -10; p.x = rnd(0, W); }
+      ctx.fillStyle = p.c ? "rgba(255,110,150,.85)" : "rgba(255,235,240,.7)";
+      ctx.fillText(Math.sin(T * 2 + p.p) > 0 ? "❀" : "*", p.x, p.y);
+    }
+  }
+  const n = T > msgStart ? Math.min(msgText.length, (T - msgStart) * 12 | 0) : 0;
+  if (n !== shown) {
+    shown = n;
+    msg.innerHTML = n ? esc(msgText.slice(0, n)) + (n === msgText.length ? '<span class="h">♥</span>' : '<span class="cur">&nbsp;</span>') : "";
+  }
+  hint.style.opacity = T > 7.5 ? 1 : 0;
+  if ((now | 0) % 6 === 0 || T < 0.1) {
+    els.fps.textContent = Math.round(fps);
+    els.rot.textContent = (((ang * 180 / Math.PI) % 360 + 360) % 360).toFixed(1) + "°";
+    els.cnt.textContent = visible.toLocaleString("en-US");
+    els.clock.textContent = "t " + T.toFixed(1).padStart(4, "0") + "s";
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+let down = null;
+stage.addEventListener("pointerdown", e => { if (e.target.id === "again") return; down = { x: e.clientX }; stage.setPointerCapture(e.pointerId); });
+stage.addEventListener("pointermove", e => { if (!down) return; const dx = e.clientX - down.x; down.x = e.clientX; drag += dx * 0.01; });
+stage.addEventListener("pointerup", () => { down = null; });
+document.getElementById("again").addEventListener("click", () => { t0 = performance.now(); petals = []; shown = -1; });
+
+// the source scrolls by underneath, like a screen recording
+const lines = document.getElementById("src").textContent.split("\n").filter(l => l.trim()), pre = document.getElementById("code"), lnEl = document.getElementById("ln");
+let li = 0;
+function tick() {
+  const vis = Math.max(3, Math.floor(pre.clientHeight / 17.6)), start = Math.max(0, li - Math.floor(vis / 2));
+  let out = "";
+  for (let j = start; j < Math.min(lines.length, start + vis); j++) {
+    const row = `<span class="n">${String(j + 1).padStart(3, " ")}</span>  ${esc(lines[j])}`;
+    out += (j === li ? `<span class="on">${row}</span>` : row) + "\n";
+  }
+  pre.innerHTML = out; lnEl.textContent = "ln " + (li + 1);
+  li = (li + 1) % lines.length;
+}
+tick(); setInterval(tick, reduce ? 1200 : 220);
+</script>
+</body>
+</html>
