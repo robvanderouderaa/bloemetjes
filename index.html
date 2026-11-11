@@ -69,7 +69,7 @@ canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
 // projected to a character grid and shaded by light.
 const TAU = Math.PI * 2, RAMP = ".:-=+*o#%@", YOFF = 0.44;
 const raw = decodeURIComponent((location.hash || "").slice(1)).replace(/[-_]+/g, " ").trim();
-const NAME = raw.slice(0, 28);
+const NAME = raw ? raw.slice(0, 28) : "Astrid";
 const HELLO = ` bloemetjes voor jou${NAME ? ", " + NAME : ""} `;
 const A = { tx:[],ty:[],tz:[], sx:[],sy:[],sz:[], nx:[],ny:[],nz:[], r:[],g:[],b:[], sh:[], d:[], du:[] };
 const rnd = (a = 0, b = 1) => a + Math.random() * (b - a);
@@ -243,7 +243,7 @@ function breath(c, d0) {
 function build() {
   for (let i = 0; i < 3200; i++) {                         // the table it stands on
     const r = 1.3 * Math.sqrt(Math.random()), a = rnd(0, TAU);
-    add([r * Math.cos(a), -1.5, r * Math.sin(a)], [0, 1, 0], [170, 110, 160], (0.12 + 0.2 * Math.random()) * (1 - r / 1.5), r * 0.35, 0.1);
+    add([r * Math.cos(a), -1.5, r * Math.sin(a)], [0, 1, 0], [150, 100, 145], (0.08 + 0.14 * Math.random()) * (1 - r / 1.5), r * 0.35, 0.1);
   }
   const C = [0, -0.45, 0], RED = [208, 24, 48], PINK = [242, 108, 150], LILAC = [168, 76, 206], ORANGE = [246, 134, 42];
   // [polar angle, azimuth, type, colour or lily-is-pink, size]
@@ -292,7 +292,7 @@ function resize() {
   sparks = Array.from({ length: 34 }, () => { const a = rnd(0, TAU), r = Math.sqrt(Math.random());
     return { x: Math.cos(a) * r * 1.15, y: Math.sin(a) * r * 0.75 - 0.35, p: rnd(0, TAU), s: rnd(0.6, 1.4) }; });
   bgGrad = ctx.createRadialGradient(W / 2, H * 0.4, 0, W / 2, H * 0.4, Math.max(W, H) * 0.75);
-  bgGrad.addColorStop(0, "#22122c"); bgGrad.addColorStop(0.5, "#0e0b17"); bgGrad.addColorStop(1, "#05060a");
+  bgGrad.addColorStop(0, "#140a1a"); bgGrad.addColorStop(0.5, "#08070c"); bgGrad.addColorStop(1, "#030304");
   glow.width = Math.max(1, cv.width / 4 | 0); glow.height = Math.max(1, cv.height / 4 | 0);
 }
 addEventListener("resize", resize); resize();
@@ -326,18 +326,18 @@ function frame(now) {
       const nx = NX[i] * ca + NZ[i] * sa, nz = -NX[i] * sa + NZ[i] * ca;
       const ny = NY[i] * ct + nz * st, nz2 = nz * ct - NY[i] * st;
       const dot = Math.abs(nx * LIGHT[0] + ny * LIGHT[1] + nz2 * LIGHT[2]);
-      zb[k] = zz; ib[k] = i; lb[k] = SH[i] * (0.28 + 0.72 * dot) * Math.max(0.45, 1.25 - (zz - 3.3) * 0.45);
+      zb[k] = zz; ib[k] = i; lb[k] = SH[i] * (0.42 + 0.68 * dot) * 1.12 * Math.max(0.45, 1.25 - (zz - 3.3) * 0.45);
     }
   }
   ctx.fillStyle = bgGrad; ctx.fillRect(0, 0, W, H);
-  ctx.font = `${ch}px "JetBrains Mono", ui-monospace, Consolas, monospace`; ctx.textBaseline = "top";
+  ctx.font = `700 ${ch}px "JetBrains Mono", ui-monospace, Consolas, monospace`; ctx.textBaseline = "top";
   for (const s of stars) {                          // twinkling sky
-    const b = 0.35 + 0.35 * Math.sin(T * 1.7 + s.p);
-    ctx.fillStyle = `rgba(200,210,255,${b})`; ctx.fillText(b > 0.62 ? "+" : ".", s.x, s.y);
+    const b = 0.18 + 0.22 * Math.sin(T * 1.7 + s.p);
+    ctx.fillStyle = `rgba(200,210,255,${b})`; ctx.fillText(b > 0.36 ? "+" : ".", s.x, s.y);
   }
   for (let k = 0; k < ib.length; k++) {
     const i = ib[k]; if (i < 0) continue;
-    const l = Math.min(1, lb[k]), m = 0.3 + 0.85 * l, sp = l > 0.8 ? (l - 0.8) * 2 : 0;  // soft highlight on lit petals
+    const l = Math.min(1, lb[k]), m = 0.5 + 0.75 * l, sp = l > 0.8 ? (l - 0.8) * 2 : 0;  // soft highlight on lit petals
     const r = Math.min(255, CR[i] * m), g = Math.min(255, CG[i] * m), b = Math.min(255, CB[i] * m);
     ctx.fillStyle = `rgb(${r + (255 - r) * sp | 0},${g + (255 - g) * sp | 0},${b + (255 - b) * sp | 0})`;
     ctx.fillText(RAMP[Math.min(9, l * 10 | 0)], (k % cols) * cw, (k / cols | 0) * ch);
@@ -350,7 +350,7 @@ function frame(now) {
   gctx.clearRect(0, 0, glow.width, glow.height);   // bloom: shrink, blur, add back on top
   gctx.drawImage(cv, 0, 0, glow.width, glow.height);
   ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.globalCompositeOperation = "lighter"; ctx.globalAlpha = 0.55; ctx.filter = "blur(3px)";
+  ctx.globalCompositeOperation = "lighter"; ctx.globalAlpha = 0.75; ctx.filter = "blur(3px)";
   ctx.drawImage(glow, 0, 0, cv.width, cv.height); ctx.restore();
   if (T > 5 && !reduce) {                           // drifting petals
     if (petals.length < 26 && Math.random() < 0.08) petals.push({ x: rnd(0, W), y: -10, v: rnd(14, 30), p: rnd(0, TAU), c: Math.random() < 0.6 });
